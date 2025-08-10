@@ -1,58 +1,62 @@
-"""tfexample: A Flower / TensorFlow app."""
+# quickstart-tensorflow/task.py
+import numpy as np
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.datasets import load_diabetes
 
-import os
+def load_model():
+    return tf.keras.models.Sequential([
+        tf.keras.layers.Input(shape=(8,)),
+        tf.keras.layers.Dense(16, activation="relu"),
+        tf.keras.layers.Dense(8, activation="relu"),
+        tf.keras.layers.Dense(1, activation="sigmoid"),
+    ])
 
-import keras
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
-from keras import layers
+def get_weights(model):
+    return model.get_weights()
 
-# Make TensorFlow log less verbose
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+def set_weights(model, weights):
+    model.set_weights(weights)
 
-
-def load_model(learning_rate: float = 0.001):
-    # Define a simple CNN for CIFAR-10 and set Adam optimizer
-    model = keras.Sequential(
-        [
-            keras.Input(shape=(32, 32, 3)),
-            layers.Conv2D(32, kernel_size=(3, 3), activation="relu"),
-            layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Conv2D(64, kernel_size=(3, 3), activation="relu"),
-            layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Flatten(),
-            layers.Dropout(0.5),
-            layers.Dense(10, activation="softmax"),
-        ]
-    )
-    optimizer = keras.optimizers.Adam(learning_rate)
+def train(model, train_data, val_data, epochs, lr):
     model.compile(
-        optimizer=optimizer,
-        loss="sparse_categorical_crossentropy",
+        loss="binary_crossentropy",
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
         metrics=["accuracy"],
     )
-    return model
+    model.fit(train_data[0], train_data[1], epochs=epochs, batch_size=32, verbose=0)
 
+def test(model, test_data):
+    loss, accuracy = model.evaluate(test_data[0], test_data[1], verbose=0)
+    return loss, accuracy
 
-fds = None  # Cache FederatedDataset
+def load_data(partition_id, num_partitions, batch_size):
+    # Cargar dataset de diabetes (Pima Indians)
+    from sklearn.datasets import load_diabetes
+    import pandas as pd
+    from sklearn.datasets import fetch_openml
 
+    # Cargar desde OpenML
+    df = fetch_openml(name='diabetes', version=1, as_frame=True)
+    X = df.data.to_numpy()
+    y = df.target.to_numpy()
+    y = (y == 'tested_positive').astype(np.float32)
 
-def load_data(partition_id, num_partitions):
-    # Download and partition dataset
-    # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
-        )
-    partition = fds.load_partition(partition_id, "train")
-    partition.set_format("numpy")
+    # Normalizar
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
 
-    # Divide data on each node: 80% train, 20% test
-    partition = partition.train_test_split(test_size=0.2)
-    x_train, y_train = partition["train"]["img"] / 255.0, partition["train"]["label"]
-    x_test, y_test = partition["test"]["img"] / 255.0, partition["test"]["label"]
+    # Particionar
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    return x_train, y_train, x_test, y_test
+    # Dividir entre clientes
+    total = len(X_train)
+    part_size = total // num_partitions
+    start = partition_id * part_size
+    end = start + part_size
+
+    x_part = X_train[start:end]
+    y_part = y_train[start:end]
+
+    return (x_part, y_part), (X_val, y_val)
